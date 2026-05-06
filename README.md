@@ -4,9 +4,9 @@ Skrypty do budowy zbiorów danych z polskiej Wikipedii w oparciu o pakiet [`spea
 
 ## Wymagania
 
-- **Python 3.10–3.13** (clostera nie ma wheela dla 3.9, a sdist wymaga Rusta + OpenBLAS)
-- Na macOS: **natywny arm64 Python** (Apple Silicon). PyPI ma `clostera` w wersji `macosx_11_0_arm64`, ale nie ma wheela dla `macosx_x86_64` — Python pod Rosettą próbuje budować ze źródeł i się wywala.
-- LM Studio z włączonym serwerem `http://localhost:1234/v1` (zakładka **Developer**)
+- **Python 3.10–3.13**
+- Na macOS Apple Silicon najlepiej użyć **natywnego arm64 Pythona** — `clostera` ma gotowe wheele dla arm64, dla x86_64 (Rosetta) trzeba by kompilować ze źródeł. Jeśli instalacja sprawia kłopot, polecamy ścieżkę z `uv` poniżej.
+- LM Studio z uruchomionym serwerem `http://localhost:1234/v1` (zakładka **Developer**)
 - Zależności z [requirements.txt](requirements.txt)
 
 ### Setup z `uv` (zalecane na macOS, czyste, bez śmiecenia w systemie)
