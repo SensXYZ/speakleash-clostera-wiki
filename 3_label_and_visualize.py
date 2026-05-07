@@ -1,14 +1,29 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "numpy",
+#     "openai",
+#     "plotly",
+#     "python-dotenv",
+#     "scikit-learn",
+#     "umap-learn",
+# ]
+# ///
 """Label clusters via an instruct LLM (LM Studio) and visualize them with UMAP + plotly."""
 
 import argparse
 import colorsys
 import json
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
+from dotenv import load_dotenv
 from openai import OpenAI
+
+load_dotenv(override=False)
 
 
 def parse_args() -> argparse.Namespace:
@@ -20,8 +35,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("-o", "--output-dir", default=None,
                    help="output dir for cluster_labels.json + plot. Defaults to --input-dir")
     p.add_argument("--base-url", default="http://localhost:1234/v1")
-    p.add_argument("--api-key", default="lm-studio",
-                   help="LM Studio token (use $LMSTUDIO_API_KEY)")
+    p.add_argument("--api-key", default=os.environ.get("LMSTUDIO_API_KEY", "lm-studio"),
+                   help="API key for the server. Default: $LMSTUDIO_API_KEY or 'lm-studio'")
     p.add_argument("--model", default=None,
                    help="instruct model id (required unless --skip-labeling)")
     p.add_argument("--samples-per-cluster", type=int, default=8,
@@ -53,7 +68,7 @@ def load_data(input_dir: Path, clustered_jsonl):
         clustered_jsonl = candidates[0]
 
     records = []
-    with open(clustered_jsonl, "r", encoding="utf-8") as fh:
+    with open(clustered_jsonl, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if line:
@@ -118,7 +133,7 @@ def name_cluster(client, model, samples, max_chars, temperature) -> str:
 def reduce_dims(vectors, reducer, n_components):
     if reducer == "umap":
         try:
-            import umap  # type: ignore
+            import umap
             print(f"running UMAP → {n_components}D (this takes a minute)...", file=sys.stderr)
             return umap.UMAP(
                 n_components=n_components,
@@ -215,7 +230,7 @@ def plot_plotly(coords, labels, names, titles, out_path, annotate_top, dim):
                 hoverinfo="skip", showlegend=False,
             ))
         else:
-            for x, y, txt in zip(label_xs, label_ys, label_texts):
+            for x, y, txt in zip(label_xs, label_ys, label_texts, strict=True):
                 fig.add_annotation(
                     x=x, y=y, text=f"<b>{txt}</b>", showarrow=False,
                     font=dict(size=11, color="black"),
@@ -276,7 +291,7 @@ def main() -> int:
             print(f"error: --skip-labeling but {labels_json_path} not found",
                   file=sys.stderr)
             return 1
-        with open(labels_json_path, "r", encoding="utf-8") as fh:
+        with open(labels_json_path, encoding="utf-8") as fh:
             names = {int(key): val for key, val in json.load(fh).items()}
         print(f"loaded cluster names from {labels_json_path}", file=sys.stderr)
     else:
@@ -284,7 +299,7 @@ def main() -> int:
             print("error: --model is required unless --skip-labeling",
                   file=sys.stderr)
             return 1
-        client = OpenAI(base_url=args.base_url, api_key=args.api_key)
+        client = OpenAI(base_url=args.base_url, api_key=args.api_key, max_retries=3)
         per_cluster = representative_samples(
             vectors, labels, records, args.samples_per_cluster
         )

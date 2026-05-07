@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "speakleash",
+# ]
+# ///
 """Sample random Polish Wikipedia articles via the speakleash package and write JSONL."""
 
 import argparse

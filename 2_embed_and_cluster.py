@@ -1,15 +1,30 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "clostera",
+#     "numpy",
+#     "openai",
+#     "python-dotenv",
+# ]
+# ///
 """Embed JSONL articles via LM Studio (OpenAI-compatible) and cluster them with clostera."""
 
 import argparse
 import json
+import os
 import sys
 import time
+from contextlib import ExitStack
 from pathlib import Path
+from typing import TextIO
 
 import clostera
 import numpy as np
+from dotenv import load_dotenv
 from openai import OpenAI
+
+load_dotenv(override=False)
 
 
 def parse_args() -> argparse.Namespace:
@@ -20,8 +35,8 @@ def parse_args() -> argparse.Namespace:
                    help="directory for vectors.npy / labels.npy / *_clustered.jsonl. Default: out")
     p.add_argument("--base-url", default="http://localhost:1234/v1",
                    help="LM Studio OpenAI-compatible endpoint. Default: http://localhost:1234/v1")
-    p.add_argument("--api-key", default="lm-studio",
-                   help="any non-empty string works for local LM Studio")
+    p.add_argument("--api-key", default=os.environ.get("LMSTUDIO_API_KEY", "lm-studio"),
+                   help="API key for the server. Default: $LMSTUDIO_API_KEY or 'lm-studio'")
     p.add_argument("--model", required=True,
                    help="embedding model id loaded in LM Studio (e.g. text-embedding-bge-m3)")
     p.add_argument("--batch-size", type=int, default=32,
@@ -42,20 +57,68 @@ def parse_args() -> argparse.Namespace:
 
 
 def iter_jsonl(path: Path):
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if line:
                 yield json.loads(line)
 
 
-def embed_all(records, client, model, batch_size, max_chars):
-    """Returns float32 (N, D) array aligned with records."""
+def _ckpt_meta_path(checkpoint_path: Path) -> Path:
+    return checkpoint_path.with_suffix(".meta.json")
+
+
+def _ckpt_meta(input_path: Path, n_records: int, model: str, max_chars: int, batch_size: int) -> dict:
+    stat = input_path.stat()
+    return {
+        "input_path": str(input_path.resolve()),
+        "input_mtime": stat.st_mtime,
+        "input_size": stat.st_size,
+        "n_records": n_records,
+        "model": model,
+        "max_chars": max_chars,
+        "batch_size": batch_size,
+    }
+
+
+def _ckpt_valid(meta_path: Path, expected: dict) -> bool:
+    if not meta_path.exists():
+        return False
+    try:
+        saved = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    return saved == expected
+
+
+def embed_all(records, client, model, batch_size, max_chars, checkpoint_path, input_path):
+    """Returns float32 (N, D) array aligned with records.
+
+    Resumes from checkpoint if checkpoint_path exists with matching metadata.
+    Saves progress after each batch.
+    """
     n = len(records)
-    vectors = None
+    meta_path = _ckpt_meta_path(checkpoint_path)
+    current_meta = _ckpt_meta(input_path, n, model, max_chars, batch_size)
+    dim: int | None = None
     cursor = 0
+
+    # Resume from checkpoint if available and config matches
+    if checkpoint_path.exists() and _ckpt_valid(meta_path, current_meta):
+        existing = np.load(checkpoint_path)
+        if existing.shape[0] > 0 and existing.shape[0] < n:
+            cursor = existing.shape[0]
+            dim = existing.shape[1]
+            print(f"  resuming from checkpoint: {cursor}/{n} already embedded",
+                  file=sys.stderr)
+    elif checkpoint_path.exists():
+        print("  checkpoint config mismatch — starting from scratch", file=sys.stderr)
+        checkpoint_path.unlink(missing_ok=True)
+        meta_path.unlink(missing_ok=True)
+
+    vectors: np.ndarray | None = None
     t0 = time.time()
-    for start in range(0, n, batch_size):
+    for start in range(cursor, n, batch_size):
         batch = records[start : start + batch_size]
         inputs = [((r.get("text") or "")[:max_chars] or " ") for r in batch]
         resp = client.embeddings.create(model=model, input=inputs)
@@ -63,13 +126,25 @@ def embed_all(records, client, model, batch_size, max_chars):
         for item in resp.data:
             v = np.asarray(item.embedding, dtype=np.float32)
             if vectors is None:
-                vectors = np.empty((n, v.shape[0]), dtype=np.float32)
-            vectors[cursor] = v
-            cursor += 1
-        if start // batch_size % 10 == 0 or cursor == n:
+                if dim is None:
+                    dim = v.shape[0]
+                vectors = np.empty((n, dim), dtype=np.float32)
+                # Pre-fill from checkpoint
+                if cursor > 0:
+                    existing = np.load(checkpoint_path)
+                    vectors[:cursor] = existing
+            vectors[start + item.index] = v
+        # Save checkpoint + metadata after each batch
+        if vectors is not None:
+            done = min(start + batch_size, n)
+            np.save(checkpoint_path, vectors[:done])
+            meta_path.write_text(json.dumps(current_meta), encoding="utf-8")
+        batch_num = start // batch_size
+        if batch_num % 10 == 0 or start + batch_size >= n:
+            done = min(start + batch_size, n)
             elapsed = time.time() - t0
-            rate = cursor / elapsed if elapsed > 0 else 0
-            print(f"  embedded {cursor}/{n}  ({rate:.1f} docs/s)", file=sys.stderr)
+            rate = (done - cursor) / elapsed if elapsed > 0 else 0
+            print(f"  embedded {done}/{n}  ({rate:.1f} docs/s)", file=sys.stderr)
     return vectors
 
 
@@ -112,11 +187,14 @@ def main() -> int:
         print(f"loaded {vectors_path} shape={vectors.shape}", file=sys.stderr)
     else:
         print(f"embedding via {args.base_url} model={args.model!r}", file=sys.stderr)
-        client = OpenAI(base_url=args.base_url, api_key=args.api_key)
+        client = OpenAI(base_url=args.base_url, api_key=args.api_key, max_retries=5)
+        ckpt_path = out_dir / "vectors_partial.npy"
         vectors = embed_all(
-            records, client, args.model, args.batch_size, args.max_chars
+            records, client, args.model, args.batch_size, args.max_chars, ckpt_path, in_path
         )
         np.save(vectors_path, vectors)
+        ckpt_path.unlink(missing_ok=True)
+        _ckpt_meta_path(ckpt_path).unlink(missing_ok=True)
         print(f"wrote {vectors_path} shape={vectors.shape}", file=sys.stderr)
 
     print(
@@ -137,10 +215,10 @@ def main() -> int:
     for old in clusters_dir.glob("cluster_*.jsonl"):
         old.unlink()
 
-    combined = open(out_jsonl, "w", encoding="utf-8")
-    per_cluster_files: dict[int, "object"] = {}
-    try:
-        for rec, lbl in zip(records, labels):
+    per_cluster_files: dict[int, TextIO] = {}
+    with ExitStack() as stack:
+        combined = stack.enter_context(open(out_jsonl, "w", encoding="utf-8"))
+        for rec, lbl in zip(records, labels, strict=True):
             cid = int(lbl)
             rec_out = dict(rec)
             rec_out["cluster"] = cid
@@ -148,13 +226,9 @@ def main() -> int:
             combined.write(line)
             fh = per_cluster_files.get(cid)
             if fh is None:
-                fh = open(clusters_dir / f"cluster_{cid:03d}.jsonl", "w", encoding="utf-8")
+                fh = stack.enter_context(open(clusters_dir / f"cluster_{cid:03d}.jsonl", "w", encoding="utf-8"))
                 per_cluster_files[cid] = fh
             fh.write(line)
-    finally:
-        combined.close()
-        for fh in per_cluster_files.values():
-            fh.close()
     print(f"wrote {out_jsonl}", file=sys.stderr)
     print(f"wrote {len(per_cluster_files)} per-cluster files to {clusters_dir}/", file=sys.stderr)
 
