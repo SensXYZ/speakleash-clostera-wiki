@@ -18,8 +18,12 @@ dependencies = [
 [dependency-groups]
 dev = [
     "mypy",
+    "pytest",
     "ruff",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py310"

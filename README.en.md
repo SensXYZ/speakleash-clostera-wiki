@@ -48,9 +48,11 @@ Scripts communicate with a local server via the OpenAI-compatible API (`/v1/embe
 3. If you have authentication enabled (**Developer → Authentication**), save the token in `.env`:
 
 ```bash
-echo 'LMSTUDIO_API_KEY=sk-lm-...' > .env
-set -a && source .env && set +a
+cp .env.example .env
+# edit .env and add your key
 ```
+
+Scripts auto-load `.env` via `python-dotenv` — no manual `source`/`export` needed.
 
 ### llama.cpp server (CLI)
 
@@ -116,6 +118,40 @@ uv run 3_label_and_visualize.py --skip-labeling --3d
 open out/clusters_3d.html
 ```
 
+## Makefile
+
+A Makefile provides convenient targets for the pipeline and dev tools:
+
+```bash
+make              # = make help — list all targets
+make setup        # uv sync (install dependencies)
+
+# Pipeline:
+make sample       # step 1: sample articles
+make embed        # step 2: embed + cluster
+make cluster      # step 2 (--skip-embed): re-cluster with different -k
+make label        # step 3: label + visualize
+make visualize    # step 3 (--skip-labeling --3d): plot only
+make pipeline     # full pipeline (1 → 2 → 3)
+
+# Code quality:
+make lint         # ruff check
+make format       # ruff format
+make typecheck    # mypy
+make check        # lint + typecheck
+
+# Cleanup:
+make clean        # remove out/ and wiki_pl.jsonl
+```
+
+Override defaults with variables:
+
+```bash
+make embed K=128 MODEL_EMBED=bge-m3.gguf
+make label MODEL_INSTR=bielik-11b-v3.0-instruct
+make sample COUNT=100k SEED=42
+```
+
 ## Scripts
 
 ### `1_create_dataset.py` — Random sample from Polish Wikipedia
@@ -157,6 +193,10 @@ uv run 1_create_dataset.py -n 50000 -o data/wiki_pl_50k.jsonl
 
 Reads the JSONL produced by script #1, calls the local embedding endpoint (OpenAI-compatible `POST /v1/embeddings`) for each article, saves the `float32` vector matrix as `vectors.npy`, then clusters them with [`clostera.Clusterer`](https://pypi.org/project/clostera/) and saves labels and an enriched JSONL.
 
+**Checkpoint/resume:** during embedding, the script saves progress to `out/vectors_partial.npy` + `out/vectors_partial.meta.json` after each batch. If interrupted and re-run, it resumes from the last saved point (as long as the config matches — model, input, batch-size). Checkpoint files are cleaned up on completion.
+
+**Retry/backoff:** the OpenAI client uses `max_retries=5` — transient API errors are handled automatically.
+
 **Server requirements:**
 
 1. Start a server (LM Studio or llama.cpp) on `http://localhost:1234`.
@@ -170,7 +210,7 @@ Reads the JSONL produced by script #1, calls the local embedding endpoint (OpenA
 | `-o`, `--output-dir` | `out` | directory for `vectors.npy`, `labels.npy` and enriched JSONL |
 | `--model` | (required) | embedding model id loaded in the server |
 | `--base-url` | `http://localhost:1234/v1` | server address |
-| `--api-key` | `lm-studio` | any non-empty string |
+| `--api-key` | `$LMSTUDIO_API_KEY` / `lm-studio` | API key for the server; defaults to env var (auto-loaded from `.env`) |
 | `--batch-size` | `32` | texts per request |
 | `--max-chars` | `2000` | truncate each article before sending (most models have a ~512 token limit) |
 | `-k`, `--clusters` | `64` | number of clusters |
@@ -211,7 +251,7 @@ wc -l out/clusters/cluster_*.jsonl | sort -rn | head -20
 
 ### `3_label_and_visualize.py` — LLM labeling + UMAP/plotly visualization
 
-For each cluster, selects N articles closest to the centroid (cosine similarity), sends them to an instruct model requesting a short Polish cluster name, reduces vectors to 2D/3D via UMAP, and renders an interactive plotly HTML chart.
+For each cluster, selects N articles closest to the centroid (cosine similarity), sends them to an instruct model requesting a short Polish cluster name, reduces vectors to 2D/3D via UMAP, and renders an interactive plotly HTML chart. Automatic retry (`max_retries=3`) on API errors.
 
 **Server requirements:** a Polish-capable instruct model (e.g. `bielik-11b-v3.0-instruct`, `bielik-4.5b-v3.0-instruct@q8_0`).
 
@@ -224,7 +264,7 @@ For each cluster, selects N articles closest to the centroid (cosine similarity)
 | `--clustered-jsonl` | (auto) | specific path to clustered JSONL; defaults to first `*_clustered.jsonl` |
 | `--model` | required (unless `--skip-labeling`) | model id in the server |
 | `--base-url` | `http://localhost:1234/v1` | server endpoint |
-| `--api-key` | `lm-studio` | server token |
+| `--api-key` | `$LMSTUDIO_API_KEY` / `lm-studio` | API key for the server; defaults to env var (auto-loaded from `.env`) |
 | `--samples-per-cluster` | `8` | articles per cluster sent to the LLM |
 | `--max-chars` | `400` | truncate each sample before the prompt |
 | `--temperature` | `0.2` | model temperature |

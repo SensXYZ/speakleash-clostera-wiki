@@ -48,9 +48,11 @@ Skrypty komunikują się z lokalnym serwerem przez OpenAI‑kompatybilne API (`/
 3. Jeśli masz włączoną autoryzację (`Developer → Authentication`), zapisz token w `.env`:
 
 ```bash
-echo 'LMSTUDIO_API_KEY=sk-lm-...' > .env
-set -a && source .env && set +a
+cp .env.example .env
+# edytuj .env i wpisz swój klucz
 ```
+
+Skrypty automatycznie wczytują `.env` (`python-dotenv`) — nie trzeba ręcznie eksportować zmiennej.
 
 ### llama.cpp server (CLI)
 
@@ -116,6 +118,40 @@ uv run 3_label_and_visualize.py --skip-labeling --3d
 open out/clusters_3d.html
 ```
 
+## Makefile
+
+Makefile zawiera wygodne targety do uruchamiania pipeline i narzędzi deweloperskich:
+
+```bash
+make              # = make help — lista targetów
+make setup        # uv sync (instalacja zależności)
+
+# Pipeline:
+make sample       # krok 1: losowanie artykułów
+make embed        # krok 2: embedding + klastrowanie
+make cluster      # krok 2 (--skip-embed): ponowne klastrowanie z innym -k
+make label        # krok 3: etykietowanie + wizualizacja
+make visualize    # krok 3 (--skip-labeling --3d): tylko wykres
+make pipeline     # pełen pipeline (1 → 2 → 3)
+
+# Jakość kodu:
+make lint         # ruff check
+make format       # ruff format
+make typecheck    # mypy
+make check        # lint + typecheck
+
+# Porządkowanie:
+make clean        # usuwa out/ i wiki_pl.jsonl
+```
+
+Możesz nadpisać domyślne parametry:
+
+```bash
+make embed K=128 MODEL_EMBED=bge-m3.gguf
+make label MODEL_INSTR=bielik-11b-v3.0-instruct
+make sample COUNT=100k SEED=42
+```
+
 ## Skrypty
 
 ### `1_create_dataset.py` — losowy próbka z polskiej Wikipedii
@@ -157,6 +193,10 @@ uv run 1_create_dataset.py -n 50000 -o data/wiki_pl_50k.jsonl
 
 Czyta JSONL wyprodukowany przez skrypt #1, dla każdego artykułu woła lokalny endpoint embeddingowy (OpenAI‑kompatybilny `POST /v1/embeddings`), zapisuje macierz wektorów `float32` jako `vectors.npy`, a następnie klastruje je przez [`clostera.Clusterer`](https://pypi.org/project/clostera/) i zapisuje etykiety oraz wzbogacony JSONL.
 
+**Checkpoint/resume:** podczas embeddowania skrypt zapisuje postęp do `out/vectors_partial.npy` + `out/vectors_partial.meta.json` po każdej partii. Po przerwaniu i ponownym uruchomieniu wznowi embedding od ostatniego zapisanego punktu (o ile konfiguracja się zgadza — model, input, batch-size). Po ukończeniu pliki checkpointu są usuwane.
+
+**Retry/backoff:** klient OpenAI używa `max_retries=5` — przejściowe błędy API są obsługiwane automatycznie.
+
 **Wymagania po stronie serwera:**
 
 1. Wystartuj serwer (LM Studio lub llama.cpp) na `http://localhost:1234`.
@@ -170,7 +210,7 @@ Czyta JSONL wyprodukowany przez skrypt #1, dla każdego artykułu woła lokalny 
 | `-o`, `--output-dir` | `out` | katalog na `vectors.npy`, `labels.npy` i wzbogacony JSONL |
 | `--model` | (wymagane) | id modelu embeddingowego załadowanego w serwerze |
 | `--base-url` | `http://localhost:1234/v1` | adres serwera |
-| `--api-key` | `lm-studio` | dowolny niepusty string |
+| `--api-key` | `$LMSTUDIO_API_KEY` / `lm-studio` | klucz API serwera; domyślnie ze zmiennej środowiskowej (auto‑ładowanej z `.env`) |
 | `--batch-size` | `32` | liczba tekstów na request |
 | `--max-chars` | `2000` | przycięcie artykułu przed wysłaniem (większość modeli ma limit ~512 tokenów) |
 | `-k`, `--clusters` | `64` | liczba klastrów |
@@ -211,7 +251,7 @@ wc -l out/clusters/cluster_*.jsonl | sort -rn | head -20
 
 ### `3_label_and_visualize.py` — etykiety przez LLM + wizualizacja UMAP/plotly
 
-Dla każdego klastra wybiera N artykułów najbliższych centroidowi (cosine), wysyła je do instruct‑modelu z prośbą o krótką polską nazwę klastra, redukuje wektory do 2D/3D przez UMAP i renderuje interaktywny wykres plotly w HTML.
+Dla każdego klastra wybiera N artykułów najbliższych centroidowi (cosine), wysyła je do instruct‑modelu z prośbą o krótką polską nazwę klastra, redukuje wektory do 2D/3D przez UMAP i renderuje interaktywny wykres plotly w HTML. Automatyczny retry (`max_retries=3`) na błędy API.
 
 **Wymagania po stronie serwera:** model instrukcyjny po polsku (np. `bielik-11b-v3.0-instruct`, `bielik-4.5b-v3.0-instruct@q8_0`).
 
@@ -224,7 +264,7 @@ Dla każdego klastra wybiera N artykułów najbliższych centroidowi (cosine), w
 | `--clustered-jsonl` | (auto) | konkretna ścieżka JSONL z klastrami; domyślnie pierwszy `*_clustered.jsonl` |
 | `--model` | wymagane (chyba że `--skip-labeling`) | id modelu w serwerze |
 | `--base-url` | `http://localhost:1234/v1` | endpoint serwera |
-| `--api-key` | `lm-studio` | token serwera |
+| `--api-key` | `$LMSTUDIO_API_KEY` / `lm-studio` | klucz API serwera; domyślnie ze zmiennej środowiskowej (auto‑ładowanej z `.env`) |
 | `--samples-per-cluster` | `8` | ile artykułów per klaster wysyła do LLM |
 | `--max-chars` | `400` | przycięcie próbki przed promptem |
 | `--temperature` | `0.2` | temperatura modelu |

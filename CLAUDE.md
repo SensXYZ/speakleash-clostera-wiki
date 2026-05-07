@@ -15,7 +15,7 @@ Each script has **PEP 723 inline metadata** declaring its dependencies, so `uv r
 - A local model server with OpenAI-compatible API (`/v1/embeddings` and `/v1/chat/completions`):
   - **LM Studio** (GUI) — Developer tab, default `http://localhost:1234/v1`
   - **llama.cpp server** (CLI) — `llama-server -m model.gguf --port 1234`, same endpoint
-- If authentication is on, store the key in `.env` as `LMSTUDIO_API_KEY=sk-lm-...` (`.env` is gitignored). Load it per session: `set -a && source .env && set +a`
+- If authentication is on, store the key in `.env` as `LMSTUDIO_API_KEY=sk-lm-...` (`.env` is gitignored). Scripts auto-load `.env` via `python-dotenv` — no manual `source` needed. A template is in `.env.example`.
 
 ## Setup
 
@@ -88,6 +88,9 @@ speakleash (plwiki) ──> 1_create_dataset.py ──> wiki_pl.jsonl
 - JSONL format: one JSON object per line, each with `"text"` and `"meta"` keys; step 2 adds `"cluster"`
 - `clostera.Clusterer` is used for clustering (wraps GPU/CPU backends automatically based on hardware)
 - The `openai` Python SDK is the HTTP client for the local server's OpenAI-compatible API (not a cloud OpenAI service)
+- Scripts 2 & 3 auto-load `.env` via `python-dotenv` (`load_dotenv(override=False)`) — `--api-key` defaults to `$LMSTUDIO_API_KEY`
+- Script 2 uses embedding checkpoint/resume (`vectors_partial.npy` + `.meta.json` in `out/`) — interrupted runs pick up where they left off if config matches
+- OpenAI client uses `max_retries` (5 for embedding, 3 for labeling) for automatic retry/backoff on transient failures
 
 ### Key Output Files (in `out/`)
 
@@ -107,13 +110,40 @@ speakleash (plwiki) ──> 1_create_dataset.py ──> wiki_pl.jsonl
 - `--limit` (step 2): cap article count for debugging
 - `--reducer pca` (step 3): use PCA instead of UMAP
 
-## Linting & Type Checking
+## Linting, Type Checking & Tests
 
 ```bash
 uv run ruff check .            # lint
 uv run ruff check --fix .      # lint with auto-fix
 uv run ruff format .           # format
 uv run mypy *.py               # type check
+uv run pytest tests/ -v        # run tests
+```
+
+Or use the Makefile:
+
+```bash
+make lint        # ruff check
+make format      # ruff format
+make typecheck   # mypy
+make test        # pytest
+make check       # lint + typecheck + test
+```
+
+```bash
+uv run ruff check .            # lint
+uv run ruff check --fix .      # lint with auto-fix
+uv run ruff format .           # format
+uv run mypy *.py               # type check
+```
+
+Or use the Makefile:
+
+```bash
+make lint        # ruff check
+make format      # ruff format
+make typecheck   # mypy
+make check       # lint + typecheck
 ```
 
 ## Dependencies
@@ -127,3 +157,4 @@ uv run mypy *.py               # type check
 | `scikit-learn` | PCA fallback when `umap-learn` is not installed |
 | `umap-learn` | Dimensionality reduction for visualization |
 | `plotly` | Interactive HTML scatter plots |
+| `python-dotenv` | Auto-loads `.env` for `LMSTUDIO_API_KEY` |

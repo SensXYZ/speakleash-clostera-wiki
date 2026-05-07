@@ -1,4 +1,4 @@
-.PHONY: help setup sync lint format typecheck check clean \
+.PHONY: help setup sync lint format typecheck test check clean \
        sample embed cluster label visualize pipeline
 
 # ── Configuration ────────────────────────────────────────────
@@ -50,7 +50,10 @@ format: ## Run ruff formatter
 typecheck: ## Run mypy type checker
 	uv run mypy *.py
 
-check: lint typecheck ## Run all checks (lint + typecheck)
+test: ## Run pytest
+	uv run pytest tests/ -v
+
+check: lint typecheck test ## Run all checks (lint + typecheck + test)
 
 # ── Cleanup ──────────────────────────────────────────────────
 clean: ## Remove generated files (out/, wiki_pl.jsonl, checkpoint)
