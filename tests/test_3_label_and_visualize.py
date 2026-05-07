@@ -1,9 +1,7 @@
 """Tests for 3_label_and_visualize.py — labeling, sampling, visualization helpers."""
 
-import json
 import subprocess
 import sys
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -52,7 +50,7 @@ class TestRepresentativeSamples:
     def test_returns_correct_count_per_cluster(self, mod_3):
         vectors, labels, records = self._make_data(n_clusters=3)
         result = mod_3.representative_samples(vectors, labels, records, n_per_cluster=4)
-        for cid, samples in result.items():
+        for _cid, samples in result.items():
             assert len(samples) == 4
 
     def test_fewer_records_than_requested(self, mod_3):
@@ -107,14 +105,14 @@ class TestLoadData:
 
     def test_auto_detect_clustered_jsonl(self, mod_3, tmp_jsonl, sample_records, tmp_path):
         records_with_cluster = [dict(r, cluster=0) for r in sample_records]
-        jsonl_path = tmp_jsonl(records_with_cluster, name="wiki_clustered.jsonl")
+        tmp_jsonl(records_with_cluster, name="wiki_clustered.jsonl")
 
         n = len(sample_records)
         vectors = np.random.randn(n, 4).astype(np.float32)
         np.save(tmp_path / "vectors.npy", vectors)
         np.save(tmp_path / "labels.npy", np.zeros(n, dtype=int))
 
-        v, l, r, p = mod_3.load_data(tmp_path, None)
+        v, lbl, r, p = mod_3.load_data(tmp_path, None)
         assert v.shape == (n, 4)
         assert len(r) == n
 
@@ -179,6 +177,47 @@ class TestReduceDims:
         vectors = rng.standard_normal((50, 8)).astype(np.float32)
         coords = mod_3.reduce_dims(vectors, "pca", 3)
         assert coords.shape == (50, 3)
+
+
+class TestPlotPlotly:
+    """plot_plotly should write an HTML file with the expected structure."""
+
+    def _make_data(self, n_records=30, n_clusters=3):
+        rng = np.random.default_rng(42)
+        coords = rng.standard_normal((n_records, 2)).astype(np.float32)
+        labels = np.array([i % n_clusters for i in range(n_records)])
+        names = {c: f"Klaster {c}" for c in range(n_clusters)}
+        titles = [f"Artykuł {i}" for i in range(n_records)]
+        return coords, labels, names, titles
+
+    def test_writes_html_2d(self, mod_3, tmp_path):
+        coords, labels, names, titles = self._make_data()
+        out_path = tmp_path / "test_2d.html"
+        mod_3.plot_plotly(coords, labels, names, titles, out_path, annotate_top=3, dim=2)
+        assert out_path.exists()
+        content = out_path.read_text(encoding="utf-8")
+        assert "<html>" in content.lower()
+        assert "plotly" in content.lower()
+
+    def test_writes_html_3d(self, mod_3, tmp_path):
+        rng = np.random.default_rng(42)
+        coords = rng.standard_normal((30, 3)).astype(np.float32)
+        labels = np.array([i % 3 for i in range(30)])
+        names = {c: f"Klaster {c}" for c in range(3)}
+        titles = [f"Artykuł {i}" for i in range(30)]
+        out_path = tmp_path / "test_3d.html"
+        mod_3.plot_plotly(coords, labels, names, titles, out_path, annotate_top=3, dim=3)
+        assert out_path.exists()
+        content = out_path.read_text(encoding="utf-8")
+        assert "plotly" in content.lower()
+
+    def test_cluster_names_in_output(self, mod_3, tmp_path):
+        coords, labels, names, titles = self._make_data()
+        out_path = tmp_path / "test_names.html"
+        mod_3.plot_plotly(coords, labels, names, titles, out_path, annotate_top=3, dim=2)
+        content = out_path.read_text(encoding="utf-8")
+        for name in names.values():
+            assert name in content
 
 
 class TestCLISmoke:

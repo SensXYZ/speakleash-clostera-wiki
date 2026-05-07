@@ -9,10 +9,10 @@ dependencies = [
     "numpy",
     "clostera",
     "scikit-learn",
-    "matplotlib",
     "umap-learn",
     "plotly",
     "python-dotenv",
+    "loguru",
 ]
 
 [dependency-groups]

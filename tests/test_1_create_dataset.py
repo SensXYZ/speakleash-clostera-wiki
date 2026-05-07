@@ -1,5 +1,6 @@
 """Tests for 1_create_dataset.py — parse_count and CLI smoke tests."""
 
+import argparse
 import subprocess
 import sys
 
@@ -31,15 +32,15 @@ class TestParseCount:
         assert mod_1.parse_count(" 10k ") == 10_000
 
     def test_negative_raises(self, mod_1):
-        with pytest.raises(Exception):  # argparse.ArgumentTypeError
+        with pytest.raises(argparse.ArgumentTypeError):
             mod_1.parse_count("-5")
 
     def test_zero_raises(self, mod_1):
-        with pytest.raises(Exception):
+        with pytest.raises(argparse.ArgumentTypeError):
             mod_1.parse_count("0")
 
     def test_just_k_raises(self, mod_1):
-        with pytest.raises(Exception):
+        with pytest.raises((argparse.ArgumentTypeError, ValueError)):
             mod_1.parse_count("k")
 
 

@@ -96,7 +96,7 @@ class TestEmbedAll:
         def fake_create(model, input):
             resp = MagicMock()
             resp.data = []
-            for i, text in enumerate(input):
+            for i, _text in enumerate(input):
                 item = MagicMock()
                 item.embedding = rng.standard_normal(dim).tolist()
                 item.index = i
@@ -183,6 +183,90 @@ class TestEmbedAll:
         # First 5 rows should NOT match the stale checkpoint
         with pytest.raises(AssertionError):
             np.testing.assert_array_almost_equal(vectors[:5], partial)
+
+    def test_complete_checkpoint_returns_early(self, mod_2, sample_records, tmp_path):
+        dim = 8
+        # Use a simple MagicMock so we can assert_not_called
+        client = MagicMock()
+        ckpt = tmp_path / "vectors_partial.npy"
+        input_path = tmp_path / "test.jsonl"
+        input_path.write_text("{}", encoding="utf-8")
+
+        # Pre-create a checkpoint with ALL 10 rows already embedded
+        full = np.random.randn(10, dim).astype(np.float32)
+        np.save(ckpt, full)
+        meta = mod_2._ckpt_meta(input_path, 10, "test-model", 500, 5)
+        meta_path = mod_2._ckpt_meta_path(ckpt)
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+        vectors = mod_2.embed_all(
+            sample_records, client, "test-model",
+            batch_size=5, max_chars=500,
+            checkpoint_path=ckpt, input_path=input_path,
+        )
+        assert vectors.shape == (10, dim)
+        # Should return the exact checkpoint data — no re-embedding
+        np.testing.assert_array_almost_equal(vectors, full)
+        # The mock client should never have been called
+        client.embeddings.create.assert_not_called()
+
+
+class TestMainSkipEmbed:
+    """Test main() with --skip-embed path (clustering + file splitting)."""
+
+    def test_skip_embed_produces_output(self, mod_2, sample_records, tmp_path):
+        n = len(sample_records)
+
+        # Write input JSONL
+        input_path = tmp_path / "test.jsonl"
+        with open(input_path, "w", encoding="utf-8") as fh:
+            for rec in sample_records:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+        # Write pre-computed vectors and labels
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        vectors = np.random.randn(n, 8).astype(np.float32)
+        np.save(out_dir / "vectors.npy", vectors)
+
+        # We need to mock clostera since it may not be available in test env
+        fake_labels = np.array([i % 3 for i in range(n)])
+        mock_clusterer = MagicMock()
+        mock_clusterer.fit_transform.return_value = fake_labels
+        mock_clusterer.algorithm_ = "test-backend"
+
+        import clostera
+        original_clusterer = clostera.Clusterer
+        clostera.Clusterer = lambda **kw: mock_clusterer
+
+        try:
+            # Simulate sys.argv for main()
+            original_argv = sys.argv
+            sys.argv = [
+                "2_embed_and_cluster.py",
+                "-i", str(input_path),
+                "-o", str(out_dir),
+                "--skip-embed",
+                "--model", "test-model",
+                "-k", "3",
+            ]
+            rc = mod_2.main()
+        finally:
+            sys.argv = original_argv
+            clostera.Clusterer = original_clusterer
+
+        assert rc == 0
+        assert (out_dir / "labels.npy").exists()
+        assert (out_dir / "test_clustered.jsonl").exists()
+        assert (out_dir / "clusters").exists()
+
+        # Verify clustered JSONL has correct cluster field
+        with open(out_dir / "test_clustered.jsonl", encoding="utf-8") as fh:
+            lines = [line.strip() for line in fh if line.strip()]
+        assert len(lines) == n
+        for line in lines:
+            rec = json.loads(line)
+            assert "cluster" in rec
 
 
 class TestCLISmoke:

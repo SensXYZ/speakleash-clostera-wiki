@@ -2,6 +2,7 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
+#     "loguru",
 #     "numpy",
 #     "openai",
 #     "plotly",
@@ -21,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 from dotenv import load_dotenv
+from loguru import logger
 from openai import OpenAI
 
 load_dotenv(override=False)
@@ -88,7 +90,7 @@ def representative_samples(vectors, labels, records, n_per_cluster):
         idx = np.where(labels == k)[0]
         cluster_vecs = vectors[idx]
         centroid = cluster_vecs.mean(axis=0)
-        denom = np.linalg.norm(cluster_vecs, axis=1) * np.linalg.norm(centroid) + 1e-9
+        denom = (np.linalg.norm(cluster_vecs, axis=1) + 1e-9) * (np.linalg.norm(centroid) + 1e-9)
         sims = cluster_vecs @ centroid / denom
         order = np.argsort(-sims)
         picked = idx[order[:n_per_cluster]]
@@ -134,7 +136,7 @@ def reduce_dims(vectors, reducer, n_components):
     if reducer == "umap":
         try:
             import umap
-            print(f"running UMAP → {n_components}D (this takes a minute)...", file=sys.stderr)
+            logger.info("running UMAP → {}D (this takes a minute)...", n_components)
             return umap.UMAP(
                 n_components=n_components,
                 metric="cosine",
@@ -143,7 +145,7 @@ def reduce_dims(vectors, reducer, n_components):
                 random_state=42,
             ).fit_transform(vectors)
         except ImportError:
-            print("umap-learn missing; falling back to PCA", file=sys.stderr)
+            logger.warning("umap-learn missing; falling back to PCA")
 
     from sklearn.decomposition import PCA
     return PCA(n_components=n_components, random_state=42).fit_transform(vectors)
@@ -263,7 +265,7 @@ def plot_plotly(coords, labels, names, titles, out_path, annotate_top, dim):
         ))
 
     fig.write_html(out_path, include_plotlyjs="cdn")
-    print(f"wrote {out_path}", file=sys.stderr)
+    logger.info("wrote {}", out_path)
 
 
 def main() -> int:
@@ -283,21 +285,18 @@ def main() -> int:
     vectors, labels, records, clustered_jsonl = load_data(in_dir, clustered_arg)
     titles = [article_title(r) for r in records]
     k = len(np.unique(labels))
-    print(f"loaded {len(records)} records, dim={vectors.shape[1]}, k={k} "
-          f"(jsonl={clustered_jsonl})", file=sys.stderr)
+    logger.info("loaded {} records, dim={}, k={} (jsonl={})", len(records), vectors.shape[1], k, clustered_jsonl)
 
     if args.skip_labeling:
         if not labels_json_path.exists():
-            print(f"error: --skip-labeling but {labels_json_path} not found",
-                  file=sys.stderr)
+            logger.error("--skip-labeling but {} not found", labels_json_path)
             return 1
         with open(labels_json_path, encoding="utf-8") as fh:
             names = {int(key): val for key, val in json.load(fh).items()}
-        print(f"loaded cluster names from {labels_json_path}", file=sys.stderr)
+        logger.info("loaded cluster names from {}", labels_json_path)
     else:
         if not args.model:
-            print("error: --model is required unless --skip-labeling",
-                  file=sys.stderr)
+            logger.error("--model is required unless --skip-labeling")
             return 1
         client = OpenAI(base_url=args.base_url, api_key=args.api_key, max_retries=3)
         per_cluster = representative_samples(
@@ -311,13 +310,13 @@ def main() -> int:
                 )
             except Exception as e:
                 name = f"(błąd: {type(e).__name__})"
-                print(f"  cluster {cid}: {name} — {e}", file=sys.stderr)
+                logger.warning("cluster {}: {} — {}", cid, name, e)
             names[cid] = name
-            print(f"  cluster {cid:>3}: {name}", file=sys.stderr)
+            logger.info("cluster {:>3}: {}", cid, name)
         with open(labels_json_path, "w", encoding="utf-8") as fh:
             json.dump({str(c): n for c, n in names.items()}, fh,
                       ensure_ascii=False, indent=2)
-        print(f"wrote {labels_json_path}", file=sys.stderr)
+        logger.info("wrote {}", labels_json_path)
 
     n_components = 3 if args.three_d else 2
     coords = reduce_dims(vectors, args.reducer, n_components)

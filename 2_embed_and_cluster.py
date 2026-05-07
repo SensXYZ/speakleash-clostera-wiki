@@ -3,6 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = [
 #     "clostera",
+#     "loguru",
 #     "numpy",
 #     "openai",
 #     "python-dotenv",
@@ -22,6 +23,7 @@ from typing import TextIO
 import clostera
 import numpy as np
 from dotenv import load_dotenv
+from loguru import logger
 from openai import OpenAI
 
 load_dotenv(override=False)
@@ -102,17 +104,20 @@ def embed_all(records, client, model, batch_size, max_chars, checkpoint_path, in
     current_meta = _ckpt_meta(input_path, n, model, max_chars, batch_size)
     dim: int | None = None
     cursor = 0
+    cached_existing: np.ndarray | None = None
 
     # Resume from checkpoint if available and config matches
     if checkpoint_path.exists() and _ckpt_valid(meta_path, current_meta):
-        existing = np.load(checkpoint_path)
-        if existing.shape[0] > 0 and existing.shape[0] < n:
-            cursor = existing.shape[0]
-            dim = existing.shape[1]
-            print(f"  resuming from checkpoint: {cursor}/{n} already embedded",
-                  file=sys.stderr)
+        cached_existing = np.load(checkpoint_path)
+        if cached_existing.shape[0] == n:
+            logger.info("checkpoint complete ({}/{}) — skipping embedding", n, n)
+            return cached_existing
+        if cached_existing.shape[0] > 0:
+            cursor = cached_existing.shape[0]
+            dim = cached_existing.shape[1]
+            logger.info("resuming from checkpoint: {}/{} already embedded", cursor, n)
     elif checkpoint_path.exists():
-        print("  checkpoint config mismatch — starting from scratch", file=sys.stderr)
+        logger.warning("checkpoint config mismatch — starting from scratch")
         checkpoint_path.unlink(missing_ok=True)
         meta_path.unlink(missing_ok=True)
 
@@ -129,10 +134,9 @@ def embed_all(records, client, model, batch_size, max_chars, checkpoint_path, in
                 if dim is None:
                     dim = v.shape[0]
                 vectors = np.empty((n, dim), dtype=np.float32)
-                # Pre-fill from checkpoint
-                if cursor > 0:
-                    existing = np.load(checkpoint_path)
-                    vectors[:cursor] = existing
+                # Pre-fill from checkpoint (use cached load, not a second I/O)
+                if cached_existing is not None:
+                    vectors[:cursor] = cached_existing
             vectors[start + item.index] = v
         # Save checkpoint + metadata after each batch
         if vectors is not None:
@@ -144,7 +148,7 @@ def embed_all(records, client, model, batch_size, max_chars, checkpoint_path, in
             done = min(start + batch_size, n)
             elapsed = time.time() - t0
             rate = (done - cursor) / elapsed if elapsed > 0 else 0
-            print(f"  embedded {done}/{n}  ({rate:.1f} docs/s)", file=sys.stderr)
+            logger.info("embedded {}/{}  ({:.1f} docs/s)", done, n, rate)
     return vectors
 
 
@@ -159,7 +163,7 @@ def main() -> int:
     out_jsonl = out_dir / f"{in_path.stem}_clustered.jsonl"
 
     if not in_path.exists():
-        print(f"error: input not found: {in_path}", file=sys.stderr)
+        logger.error("input not found: {}", in_path)
         return 1
 
     records = []
@@ -169,24 +173,21 @@ def main() -> int:
             break
     n_total = len(records)
     if n_total == 0:
-        print("error: input is empty", file=sys.stderr)
+        logger.error("input is empty")
         return 1
-    print(f"loaded {n_total} records from {in_path}", file=sys.stderr)
+    logger.info("loaded {} records from {}", n_total, in_path)
 
     if args.skip_embed:
         if not vectors_path.exists():
-            print(f"error: --skip-embed set but {vectors_path} not found", file=sys.stderr)
+            logger.error("--skip-embed set but {} not found", vectors_path)
             return 1
         vectors = np.load(vectors_path).astype(np.float32, copy=False)
         if vectors.shape[0] != n_total:
-            print(
-                f"error: vectors.npy has {vectors.shape[0]} rows, JSONL has {n_total}",
-                file=sys.stderr,
-            )
+            logger.error("vectors.npy has {} rows, JSONL has {}", vectors.shape[0], n_total)
             return 1
-        print(f"loaded {vectors_path} shape={vectors.shape}", file=sys.stderr)
+        logger.info("loaded {} shape={}", vectors_path, vectors.shape)
     else:
-        print(f"embedding via {args.base_url} model={args.model!r}", file=sys.stderr)
+        logger.info("embedding via {} model={}", args.base_url, args.model)
         client = OpenAI(base_url=args.base_url, api_key=args.api_key, max_retries=5)
         ckpt_path = out_dir / "vectors_partial.npy"
         vectors = embed_all(
@@ -195,20 +196,17 @@ def main() -> int:
         np.save(vectors_path, vectors)
         ckpt_path.unlink(missing_ok=True)
         _ckpt_meta_path(ckpt_path).unlink(missing_ok=True)
-        print(f"wrote {vectors_path} shape={vectors.shape}", file=sys.stderr)
+        logger.info("wrote {} shape={}", vectors_path, vectors.shape)
 
-    print(
-        f"clustering: k={args.clusters} metric={args.metric} algorithm={args.algorithm}",
-        file=sys.stderr,
-    )
+    logger.info("clustering: k={} metric={} algorithm={}", args.clusters, args.metric, args.algorithm)
     clusterer = clostera.Clusterer(
         k=args.clusters, metric=args.metric, algorithm=args.algorithm
     )
     labels = clusterer.fit_transform(vectors)
-    print(f"clostera backend selected: {clusterer.algorithm_}", file=sys.stderr)
+    logger.info("clostera backend selected: {}", clusterer.algorithm_)
 
     np.save(labels_path, labels)
-    print(f"wrote {labels_path}", file=sys.stderr)
+    logger.info("wrote {}", labels_path)
 
     clusters_dir = out_dir / "clusters"
     clusters_dir.mkdir(exist_ok=True)
@@ -229,15 +227,12 @@ def main() -> int:
                 fh = stack.enter_context(open(clusters_dir / f"cluster_{cid:03d}.jsonl", "w", encoding="utf-8"))
                 per_cluster_files[cid] = fh
             fh.write(line)
-    print(f"wrote {out_jsonl}", file=sys.stderr)
-    print(f"wrote {len(per_cluster_files)} per-cluster files to {clusters_dir}/", file=sys.stderr)
+    logger.info("wrote {}", out_jsonl)
+    logger.info("wrote {} per-cluster files to {}/", len(per_cluster_files), clusters_dir)
 
     unique, counts = np.unique(labels, return_counts=True)
-    print(
-        f"cluster sizes: min={counts.min()} median={int(np.median(counts))} "
-        f"max={counts.max()} (k={len(unique)})",
-        file=sys.stderr,
-    )
+    logger.info("cluster sizes: min={} median={} max={} (k={})",
+                counts.min(), int(np.median(counts)), counts.max(), len(unique))
     return 0
 
 

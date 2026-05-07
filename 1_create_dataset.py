@@ -2,6 +2,7 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
+#     "loguru",
 #     "speakleash",
 # ]
 # ///
@@ -13,6 +14,7 @@ import os
 import random
 import sys
 
+from loguru import logger
 from speakleash import Speakleash
 
 
@@ -65,22 +67,19 @@ def main() -> int:
     sl = Speakleash(cache_dir)
     ds = sl.get(args.dataset)
     if ds is None:
-        print(f"error: dataset {args.dataset!r} not found", file=sys.stderr)
+        logger.error("dataset {} not found", args.dataset)
         return 1
 
     total = int(ds.documents or 0)
     if total <= 0:
-        print(f"error: dataset {args.dataset!r} reports {total} documents", file=sys.stderr)
+        logger.error("dataset {} reports {} documents", args.dataset, total)
         return 1
 
     n = min(args.count, total)
     if n < args.count:
-        print(
-            f"warning: requested {args.count} but dataset has only {total}; sampling all",
-            file=sys.stderr,
-        )
+        logger.warning("requested {} but dataset has only {}; sampling all", args.count, total)
 
-    print(f"sampling {n} of {total} articles from {args.dataset!r}", file=sys.stderr)
+    logger.info("sampling {} of {} articles from {}", n, total, args.dataset)
     chosen = set(random.sample(range(total), n))
 
     out_path = os.path.abspath(args.output)
@@ -97,11 +96,11 @@ def main() -> int:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
             written += 1
             if written % 1000 == 0:
-                print(f"  {written}/{n}", file=sys.stderr)
+                logger.info("  {}/{}", written, n)
             if written == n:
                 break
 
-    print(f"done: {written} articles -> {out_path}", file=sys.stderr)
+    logger.info("done: {} articles -> {}", written, out_path)
     return 0
 
 
