@@ -1,0 +1,41 @@
+[project]
+name = "speakleash-clostera-wiki"
+version = "0.1.0"
+description = "Polish Wikipedia dataset pipeline: sample, embed, cluster, label, visualize"
+requires-python = ">=3.10"
+dependencies = [
+    "speakleash",
+    "openai",
+    "numpy",
+    "clostera",
+    "scikit-learn",
+    "umap-learn",
+    "plotly",
+    "python-dotenv",
+    "loguru",
+]
+
+[dependency-groups]
+dev = [
+    "mypy",
+    "pytest",
+    "ruff",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["speakleash", "clostera", "sklearn.*", "plotly.*", "umap"]
+ignore_missing_imports = true

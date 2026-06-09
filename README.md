@@ -1,25 +1,35 @@
 # speakleash-clostera-wiki
 
+[English](README.en.md) | **Polski**
+
 Skrypty do budowy zbiorów danych z polskiej Wikipedii w oparciu o pakiet [`speakleash`](https://pypi.org/project/speakleash/).
 
 ## Wymagania
 
 - **Python 3.10–3.13**
-- Na macOS Apple Silicon najlepiej użyć **natywnego arm64 Pythona** — `clostera` ma gotowe wheele dla arm64, dla x86_64 (Rosetta) trzeba by kompilować ze źródeł. Jeśli instalacja sprawia kłopot, polecamy ścieżkę z `uv` poniżej.
-- LM Studio z uruchomionym serwerem `http://localhost:1234/v1` (zakładka **Developer**)
-- Zależności z [requirements.txt](requirements.txt)
+- Na macOS Apple Silicon najlepiej użyć **natywnego arm64 Pythona** — `clostera` ma gotowe wheele dla arm64, dla x86_64 (Rosetta) trzeba by kompilować ze źródeł.
+- Serwer modeli lokalnych z OpenAI‑kompatybilnym API:
+  - **LM Studio** (GUI) — zakładka **Developer / Local Server**
+  - **llama.cpp server** (CLI) — patrz sekcja poniżej
+- Zależności z [requirements.txt](requirements.txt) lub [pyproject.toml](pyproject.toml)
 
-### Setup z `uv` (zalecane na macOS, czyste, bez śmiecenia w systemie)
+## Instalacja
+
+### Opcja A: `uv run` — bez ręcznego venv (zalecane)
+
+Skrypty mają wbudowane metadane PEP 723 — `uv` automatycznie utworzy środowisko i zainstaluje zależności przy pierwszym uruchomieniu:
 
 ```bash
-# uv instaluje Pythona do swojego cache w ~/.local/share/uv/python (nic globalnie):
-uv python install 3.11
-uv venv --python 3.11 .venv
-source .venv/bin/activate
-uv pip install -r requirements.txt
+uv run 1_create_dataset.py --help
 ```
 
-### Setup klasyczny (Linux / natywny arm64 Python)
+Jeśli chcesz zainstalować wszystko z góry:
+
+```bash
+uv sync
+```
+
+### Opcja B: klasyczny venv
 
 ```bash
 python -m venv .venv
@@ -27,43 +37,119 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Klucz do LM Studio
+## Serwer modeli
 
-Jeśli w LM Studio masz włączoną autoryzację (`Developer → Authentication`), zapisz token w `.env` w katalogu projektu (plik jest już w `.gitignore`):
+Skrypty komunikują się z lokalnym serwerem przez OpenAI‑kompatybilne API (`/v1/embeddings` i `/v1/chat/completions`). Możesz użyć LM Studio lub llama.cpp.
+
+### LM Studio (GUI)
+
+1. Otwórz LM Studio, w zakładce **Developer / Local Server** wystartuj serwer (domyślnie `http://localhost:1234`).
+2. Wczytaj model embeddingowy (np. `text-embedding-bge-m3`) i/lub model instrukcyjny (np. `bielik-11b-v3.0-instruct`).
+3. Jeśli masz włączoną autoryzację (`Developer → Authentication`), zapisz token w `.env`:
 
 ```bash
-echo 'LMSTUDIO_API_KEY=sk-lm-...' > .env
+cp .env.example .env
+# edytuj .env i wpisz swój klucz
 ```
 
-W każdej nowej sesji terminala wczytaj zmienną:
+Skrypty automatycznie wczytują `.env` (`python-dotenv`) — nie trzeba ręcznie eksportować zmiennej.
+
+### llama.cpp server (CLI)
+
+Alternatywa bez GUI — pełna kontrola z terminala. Instalacja przez Homebrew:
 
 ```bash
-set -a && source .env && set +a
+brew install llama.cpp
 ```
+
+Uruchomienie serwera:
+
+```bash
+# Model embeddingowy (krok 2)
+llama-server \
+  -m ~/.cache/lm-studio/models/bge-m3.gguf \
+  --port 1234 \
+  --embedding
+
+# Model instrukcyjny (krok 3)
+llama-server \
+  -m ~/.cache/lm-studio/models/bielik-11b-v3.0-instruct-Q4_K_M.gguf \
+  --port 1234 \
+  --host 127.0.0.1
+```
+
+Flagi `--model` w skryptach odpowiadają nazwie pliku GGUF (lub aliasowi). Przykład:
+
+```bash
+uv run 2_embed_and_cluster.py \
+  --model bge-m3.gguf \
+  --api-key unused \
+  -k 128
+
+uv run 3_label_and_visualize.py \
+  --model bielik-11b-v3.0-instruct-Q4_K_M.gguf \
+  --api-key unused
+```
+
+> **Uwaga:** llama.cpp server nie weryfikuje klucza API — `--api-key unused` wystarczy. Domyślny endpoint `http://localhost:1234/v1` jest ten sam co w LM Studio, więc nie trzeba zmieniać `--base-url`.
 
 ## Pipeline — kolejność uruchamiania
 
 ```bash
 # 1) wylosuj próbkę z polskiej Wikipedii (output: wiki_pl.jsonl)
-python 1_create_dataset.py -n 10k --seed 42
+uv run 1_create_dataset.py -n 10k --seed 42
 
 # 2) embedding + klastrowanie
 #    output: out/vectors.npy, out/labels.npy,
 #            out/wiki_pl_clustered.jsonl, out/clusters/cluster_NNN.jsonl
-python 2_embed_and_cluster.py \
+uv run 2_embed_and_cluster.py \
   --model text-embedding-bge-m3 \
   --api-key "$LMSTUDIO_API_KEY" \
   -k 128
 
 # 3) etykietowanie klastrów przez LLM + wizualizacja UMAP/plotly
 #    output: out/cluster_labels.json, out/clusters_2d.html / clusters_3d.html
-python 3_label_and_visualize.py \
+uv run 3_label_and_visualize.py \
   --model bielik-11b-v3.0-instruct \
   --api-key "$LMSTUDIO_API_KEY"
 
 # 3a) szybkie iteracje na wykresie bez ponownego pytania LLM
-python 3_label_and_visualize.py --skip-labeling --3d
+uv run 3_label_and_visualize.py --skip-labeling --3d
 open out/clusters_3d.html
+```
+
+## Makefile
+
+Makefile zawiera wygodne targety do uruchamiania pipeline i narzędzi deweloperskich:
+
+```bash
+make              # = make help — lista targetów
+make setup        # uv sync (instalacja zależności)
+
+# Pipeline:
+make sample       # krok 1: losowanie artykułów
+make embed        # krok 2: embedding + klastrowanie
+make cluster      # krok 2 (--skip-embed): ponowne klastrowanie z innym -k
+make label        # krok 3: etykietowanie + wizualizacja
+make visualize    # krok 3 (--skip-labeling --3d): tylko wykres
+make pipeline     # pełen pipeline (1 → 2 → 3)
+
+# Jakość kodu:
+make lint         # ruff check
+make format       # ruff format
+make typecheck    # mypy
+make check        # lint + typecheck
+
+# Porządkowanie:
+make clean        # usuwa out/ i wiki_pl.jsonl
+```
+
+Możesz nadpisać domyślne parametry:
+
+```bash
+make embed K=128 MODEL_EMBED=bge-m3.gguf
+make label MODEL_INSTR=bielik-11b-v3.0-instruct
+make sample COUNT=100k SEED=42
 ```
 
 ## Skrypty
@@ -92,24 +178,28 @@ Pobiera dataset `plwiki` przez `speakleash`, losuje zadaną liczbę artykułów 
 
 ```bash
 # 10 000 artykułów -> wiki_pl.jsonl
-python 1_create_dataset.py -n 10k
+uv run 1_create_dataset.py -n 10k
 
 # 100 000 artykułów, deterministycznie
-python 1_create_dataset.py -n 100k --seed 42
+uv run 1_create_dataset.py -n 100k --seed 42
 
 # inna ścieżka wyjścia
-python 1_create_dataset.py -n 50000 -o data/wiki_pl_50k.jsonl
+uv run 1_create_dataset.py -n 50000 -o data/wiki_pl_50k.jsonl
 ```
 
 **Jak działa losowanie:** skrypt odczytuje liczbę dokumentów w datasecie (`ds.documents`), losuje `N` unikalnych indeksów przez `random.sample`, a następnie jednokrotnie iteruje strumień `ds.ext_data` i zapisuje tylko wybrane pozycje. Pełny dataset i tak musi się pobrać do `--cache-dir` — to wynika ze sposobu działania `speakleash`.
 
-### `2_embed_and_cluster.py` — embeddingi z LM Studio + klastrowanie clostera
+### `2_embed_and_cluster.py` — embeddingi + klastrowanie clostera
 
-Czyta JSONL wyprodukowany przez skrypt #1, dla każdego artykułu woła lokalny endpoint embeddingowy LM Studio (OpenAI‑kompatybilny `POST /v1/embeddings`), zapisuje macierz wektorów `float32` jako `vectors.npy`, a następnie klastruje je przez [`clostera.Clusterer`](https://pypi.org/project/clostera/) i zapisuje etykiety oraz wzbogacony JSONL.
+Czyta JSONL wyprodukowany przez skrypt #1, dla każdego artykułu woła lokalny endpoint embeddingowy (OpenAI‑kompatybilny `POST /v1/embeddings`), zapisuje macierz wektorów `float32` jako `vectors.npy`, a następnie klastruje je przez [`clostera.Clusterer`](https://pypi.org/project/clostera/) i zapisuje etykiety oraz wzbogacony JSONL.
 
-**Wymagania po stronie LM Studio:**
+**Checkpoint/resume:** podczas embeddowania skrypt zapisuje postęp do `out/vectors_partial.npy` + `out/vectors_partial.meta.json` po każdej partii. Po przerwaniu i ponownym uruchomieniu wznowi embedding od ostatniego zapisanego punktu (o ile konfiguracja się zgadza — model, input, batch-size). Po ukończeniu pliki checkpointu są usuwane.
 
-1. Uruchom LM Studio, w zakładce **Developer / Local Server** wystartuj serwer (domyślnie `http://localhost:1234`).
+**Retry/backoff:** klient OpenAI używa `max_retries=5` — przejściowe błędy API są obsługiwane automatycznie.
+
+**Wymagania po stronie serwera:**
+
+1. Wystartuj serwer (LM Studio lub llama.cpp) na `http://localhost:1234`.
 2. Wczytaj model embeddingowy (np. `text-embedding-bge-m3`, `text-embedding-multilingual-e5-large`). Identyfikator modelu, który tu wpiszesz, podajesz dalej w `--model`.
 
 **Argumenty CLI:**
@@ -118,9 +208,9 @@ Czyta JSONL wyprodukowany przez skrypt #1, dla każdego artykułu woła lokalny 
 |---|---|---|
 | `-i`, `--input` | `wiki_pl.jsonl` | wejściowy JSONL |
 | `-o`, `--output-dir` | `out` | katalog na `vectors.npy`, `labels.npy` i wzbogacony JSONL |
-| `--model` | (wymagane) | id modelu embeddingowego załadowanego w LM Studio |
-| `--base-url` | `http://localhost:1234/v1` | adres serwera LM Studio |
-| `--api-key` | `lm-studio` | dowolny niepusty string (LM Studio nie weryfikuje) |
+| `--model` | (wymagane) | id modelu embeddingowego załadowanego w serwerze |
+| `--base-url` | `http://localhost:1234/v1` | adres serwera |
+| `--api-key` | `$LMSTUDIO_API_KEY` / `lm-studio` | klucz API serwera; domyślnie ze zmiennej środowiskowej (auto‑ładowanej z `.env`) |
 | `--batch-size` | `32` | liczba tekstów na request |
 | `--max-chars` | `2000` | przycięcie artykułu przed wysłaniem (większość modeli ma limit ~512 tokenów) |
 | `-k`, `--clusters` | `64` | liczba klastrów |
@@ -133,13 +223,13 @@ Czyta JSONL wyprodukowany przez skrypt #1, dla każdego artykułu woła lokalny 
 
 ```bash
 # pełny pipeline: embed + cluster, k=64, metric=cos
-python 2_embed_and_cluster.py \
+uv run 2_embed_and_cluster.py \
   -i wiki_pl.jsonl \
   --model text-embedding-bge-m3 \
   -k 64
 
 # eksperymenty z liczbą klastrów bez ponownego embeddowania
-python 2_embed_and_cluster.py --skip-embed -k 256 --metric cos --model unused
+uv run 2_embed_and_cluster.py --skip-embed -k 256 --metric cos --model unused
 ```
 
 **Pliki wyjściowe** (w `--output-dir`):
@@ -161,9 +251,9 @@ wc -l out/clusters/cluster_*.jsonl | sort -rn | head -20
 
 ### `3_label_and_visualize.py` — etykiety przez LLM + wizualizacja UMAP/plotly
 
-Dla każdego klastra wybiera N artykułów najbliższych centroidowi (cosine), wysyła je do instruct‑modelu w LM Studio z prośbą o krótką polską nazwę klastra, redukuje wektory do 2D/3D przez UMAP i renderuje interaktywny wykres plotly w HTML.
+Dla każdego klastra wybiera N artykułów najbliższych centroidowi (cosine), wysyła je do instruct‑modelu z prośbą o krótką polską nazwę klastra, redukuje wektory do 2D/3D przez UMAP i renderuje interaktywny wykres plotly w HTML. Automatyczny retry (`max_retries=3`) na błędy API.
 
-**Wymagania po stronie LM Studio:** model instrukcyjny po polsku (np. `bielik-11b-v3.0-instruct`, `bielik-4.5b-v3.0-instruct@q8_0`).
+**Wymagania po stronie serwera:** model instrukcyjny po polsku (np. `bielik-11b-v3.0-instruct`, `bielik-4.5b-v3.0-instruct@q8_0`).
 
 **Argumenty CLI:**
 
@@ -172,9 +262,9 @@ Dla każdego klastra wybiera N artykułów najbliższych centroidowi (cosine), w
 | `-i`, `--input-dir` | `out` | katalog z `vectors.npy`, `labels.npy`, `*_clustered.jsonl` |
 | `-o`, `--output-dir` | `=input-dir` | katalog na `cluster_labels.json` i HTML |
 | `--clustered-jsonl` | (auto) | konkretna ścieżka JSONL z klastrami; domyślnie pierwszy `*_clustered.jsonl` |
-| `--model` | wymagane (chyba że `--skip-labeling`) | id modelu w LM Studio |
-| `--base-url` | `http://localhost:1234/v1` | endpoint LM Studio |
-| `--api-key` | `lm-studio` | token LM Studio (przekazuj `"$LMSTUDIO_API_KEY"`) |
+| `--model` | wymagane (chyba że `--skip-labeling`) | id modelu w serwerze |
+| `--base-url` | `http://localhost:1234/v1` | endpoint serwera |
+| `--api-key` | `$LMSTUDIO_API_KEY` / `lm-studio` | klucz API serwera; domyślnie ze zmiennej środowiskowej (auto‑ładowanej z `.env`) |
 | `--samples-per-cluster` | `8` | ile artykułów per klaster wysyła do LLM |
 | `--max-chars` | `400` | przycięcie próbki przed promptem |
 | `--temperature` | `0.2` | temperatura modelu |
@@ -188,15 +278,15 @@ Dla każdego klastra wybiera N artykułów najbliższych centroidowi (cosine), w
 
 ```bash
 # pełen przebieg: nazwij klastry przez Bielika i zrób wykres 2D
-python 3_label_and_visualize.py \
+uv run 3_label_and_visualize.py \
   --model bielik-11b-v3.0-instruct \
   --api-key "$LMSTUDIO_API_KEY"
 
 # 3D, bez ponownego pytania LLM
-python 3_label_and_visualize.py --skip-labeling --3d
+uv run 3_label_and_visualize.py --skip-labeling --3d
 
 # tunowanie UMAP/PCA, oddzielny plik wyjściowy
-python 3_label_and_visualize.py --skip-labeling --reducer pca --plot-name clusters_pca.html
+uv run 3_label_and_visualize.py --skip-labeling --reducer pca --plot-name clusters_pca.html
 ```
 
 **Pliki wyjściowe:**
